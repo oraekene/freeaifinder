@@ -1444,9 +1444,12 @@ function injectProviderPrices(providerName, modelObj) {
 function transformAllData() {
   if (window.__TRANSFORMED) return;
   window.__MODELS_OBJ = MODELS.map(transformLegacyModel);
-  window.__MODELS_OBJ.forEach(m => {
-    Object.keys(PP).forEach(p => injectProviderPrices(p, m));
-  });
+  const ppKeys = Object.keys(PP);
+  for (const m of window.__MODELS_OBJ) {
+    for (let i = 0; i < ppKeys.length; i++) injectProviderPrices(ppKeys[i], m);
+  }
+  _modelByName = {};
+  for (const m of window.__MODELS_OBJ) _modelByName[m.name] = m;
   window.__TRANSFORMED = true;
 }
 
@@ -1454,6 +1457,10 @@ function transformAllData() {
 let activeCapability = 'text';
 let activeBenchmark = 'artificial-analysis';
 let freeOnlyCapability = false;
+
+/* ═══ CACHED LOOKUPS ═══ */
+let _modelByName = null;
+function modelByName(n) { return _modelByName ? _modelByName[n] : null; }
 
 function getCapBenchmark(model, capId, benchId) {
   const cap = model.capabilities[capId];
@@ -1993,6 +2000,15 @@ function getProvsForModel(m){
     .sort((a,b)=>{const o={free:0,trial:1,gateway:2,local:3,none:4,unknown:5};return(o[a.cat]??9)-(o[b.cat]??9);});
 }
 
+/* ═══ DEBOUNCE ═══ */
+function debounce(fn, ms) {
+  let timer;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
 /* ═══ TAB SWITCHING ═══ */
 let activeTab='providers';
 function setActiveTab(tab,{scroll=false}={}){
@@ -2154,14 +2170,13 @@ function renderP1InnerMods(p, sortState, capabilityId){
   if(!mods.length) return '<div class="dim" style="font-size:12px;padding:8px 0">No models found for this provider.</div>';
 
   const capId = capabilityId || activeCapability;
-  const obj = window.__MODELS_OBJ;
   const col=sortState.col, d=sortState.dir;
   const sorted=[...mods].sort((a,b)=>{
     if(col==='name') return d*a[0].localeCompare(b[0]);
     if(col==='creator') return d*a[1].localeCompare(b[1]);
     if(col==='intel') {
-      const sa = obj ? getCapBenchmark(obj.find(o=>o.name===a[0]), capId, activeBenchmark) ?? a[3] ?? -1 : a[3] ?? -1;
-      const sb = obj ? getCapBenchmark(obj.find(o=>o.name===b[0]), capId, activeBenchmark) ?? b[3] ?? -1 : b[3] ?? -1;
+      const sa = getCapBenchmark(modelByName(a[0]), capId, activeBenchmark) ?? a[3] ?? -1;
+      const sb = getCapBenchmark(modelByName(b[0]), capId, activeBenchmark) ?? b[3] ?? -1;
       return d*(sb - sa);
     }
     if(col==='code') return d*((b[4]??-1)-(a[4]??-1));
@@ -2176,23 +2191,23 @@ function renderP1InnerMods(p, sortState, capabilityId){
   const capTitle = capId === 'text' ? 'Intel' : capLabel;
 
   const rows=sorted.map(m=>{
+    const mo = modelByName(m[0]);
     const pp=getPP(p.name,m[0]);
     const pI=pp?(pp.i===0?'<span class="free-pill">Free</span>':'$'+(pp.i?.toFixed(3)||'?')):(m[16]!=null?'$'+m[16].toFixed(3)+'<span class="can-tag">c</span>':'—');
     const pO=pp?(pp.o===0?'<span class="free-pill">Free</span>':pp.o!=null?'$'+pp.o.toFixed(3):'—'):(m[17]!=null?'$'+m[17].toFixed(3)+'<span class="can-tag">c</span>':'—');
     const spd=pp?.spd?pp.spd+' t/s':(m[6]!=null?Math.round(m[6])+' t/s<span class="can-tag">c</span>':'—');
-    const capScore = obj ? getCapBenchmark(obj.find(o=>o.name===m[0]), capId, activeBenchmark) : m[3];
-    const badgeHtml = obj ? (() => {
-      const mo = obj.find(o=>o.name===m[0]);
-      if (!mo) return '';
+    const capScore = mo ? getCapBenchmark(mo, capId, activeBenchmark) : m[3];
+    let badgeHtml = '';
+    if (mo) {
       const summary = getCapTierSummary(mo, capId);
-      const parts = [];
-      if (summary.hasFree) parts.push('<span class="free-pill" style="font-size:10px">Free</span>');
-      if (summary.hasPaid && summary.tiers.filter(t=>t.type==='paid').length) {
-        const pt = summary.tiers.filter(t=>t.type==='paid')[0];
-        parts.push(`<span style="font-size:10px;color:var(--txt3)">$${pt.inputPrice?.toFixed(2)||'?'}</span>`);
+      const pts = [];
+      if (summary.hasFree) pts.push('<span class="free-pill" style="font-size:10px">Free</span>');
+      if (summary.hasPaid) {
+        const pt = summary.tiers.find(t=>t.type==='paid');
+        if (pt) pts.push('<span style="font-size:10px;color:var(--txt3)">$'+(pt.inputPrice?.toFixed(2)||'?')+'</span>');
       }
-      return parts.join(' ');
-    })() : '';
+      badgeHtml = pts.join(' ');
+    }
     return `<tr>
       <td style="max-width:200px" title="${m[0]}">${m[0].length>32?m[0].slice(0,30)+'…':m[0]}</td>
       <td class="dim">${m[1]}</td>
@@ -2258,54 +2273,13 @@ function renderP1(){
             ${Object.entries(CAPABILITIES).filter(([,v])=>v.benchmarks.length||v.defaultBenchmark).map(([k,v])=>`<button class="cap-tab ${k===activeCapability?'active':''}" data-cap-tab="${k}" data-prov="${p.name}">${v.label}</button>`).join('')}
           </div>
           <div class="cap-panel active">
-            ${renderP1InnerMods(p, p1InnerSort[p.name], activeCapability)}
+            ${open ? renderP1InnerMods(p, p1InnerSort[p.name], activeCapability) : ''}
           </div>
         </div>
       </div>
     </div>`;
   }).join('');
 
-  // Attach sort, cap-tab, and accordion listeners
-  const list_el=document.getElementById('p1-list');
-  list_el.addEventListener('click',e=>{
-    // Capability tab click
-    const ct = e.target.closest('.cap-tab[data-cap-tab]');
-    if (ct) {
-      e.stopPropagation();
-      const pn = ct.dataset.prov;
-      const capId = ct.dataset.capTab;
-      const body = document.getElementById('p1body-'+pn.replace(/[^a-z0-9]/gi,'_'));
-      if (body) {
-        body.querySelectorAll('.cap-tab').forEach(t=>t.classList.toggle('active', t.dataset.capTab===capId));
-        const inner = body.querySelector('.acc-inner');
-        inner.querySelector('.cap-panel').innerHTML = renderP1InnerMods(PROVIDERS.find(x=>x.name===pn), p1InnerSort[pn]||{col:'intel',dir:-1}, capId);
-      }
-      return;
-    }
-    // Inner sort
-    const ih=e.target.closest('th[data-p1inner-col]');
-    if(ih){
-      e.stopPropagation();
-      const col=ih.dataset.p1innerCol, pn=ih.dataset.prov;
-      const st=p1InnerSort[pn];
-      if(st.col===col) st.dir*=-1; else{st.col=col;st.dir=-1;}
-      const body=document.getElementById('p1body-'+pn.replace(/[^a-z0-9]/gi,'_'));
-      if(body){
-        const inner=body.querySelector('.acc-inner');
-        const activeCapId = body.querySelector('.cap-tab.active')?.dataset.capTab || activeCapability;
-        const p1panel = inner.querySelector('.cap-panel');
-        p1panel.innerHTML = renderP1InnerMods(PROVIDERS.find(x=>x.name===pn), st, activeCapId);
-      }
-      return;
-    }
-    // Accordion toggle
-    const hdr=e.target.closest('.acc-hdr[data-acc]');
-    if(!hdr) return;
-    if(e.target.tagName==='A') return; // don't toggle on link click
-    const pn=hdr.dataset.acc;
-    if(p1Expanded.has(pn)) p1Expanded.delete(pn); else p1Expanded.add(pn);
-    renderP1();
-  });
 }
 
 // P1 controls
@@ -2315,7 +2289,7 @@ document.getElementById('p1-filters').addEventListener('click',e=>{
   document.querySelectorAll('#p1-filters .fbtn').forEach(b=>b.classList.toggle('active',b===btn));
   p1Expanded.clear(); renderP1();
 });
-document.getElementById('p1-search').addEventListener('input',e=>{p1Search=e.target.value.trim();p1Expanded.clear();renderP1();});
+document.getElementById('p1-search').addEventListener('input',debounce(function(e){p1Search=e.target.value.trim();p1Expanded.clear();renderP1();},150));
 document.querySelector('.col-hdrs.t1-hcols').addEventListener('click',e=>{
   const ch=e.target.closest('.ch[data-p1col]'); if(!ch) return;
   const col=ch.dataset.p1col;
@@ -2327,6 +2301,45 @@ document.querySelector('.col-hdrs.t1-hcols').addEventListener('click',e=>{
   });
 });
 renderP1();
+
+// One-time delegated listener for P1 accordion / sort / cap-tab
+document.getElementById('p1-list').addEventListener('click', function(e) {
+  const ct = e.target.closest('.cap-tab[data-cap-tab]');
+  if (ct) {
+    e.stopPropagation();
+    const pn = ct.dataset.prov;
+    const capId = ct.dataset.capTab;
+    const body = document.getElementById('p1body-'+pn.replace(/[^a-z0-9]/gi,'_'));
+    if (body) {
+      body.querySelectorAll('.cap-tab').forEach(t=>t.classList.toggle('active', t.dataset.capTab===capId));
+      const inner = body.querySelector('.acc-inner');
+      inner.querySelector('.cap-panel').innerHTML = renderP1InnerMods(PROVIDERS.find(x=>x.name===pn), p1InnerSort[pn]||{col:'intel',dir:-1}, capId);
+    }
+    return;
+  }
+  const ih=e.target.closest('th[data-p1inner-col]');
+  if(ih){
+    e.stopPropagation();
+    const col=ih.dataset.p1innerCol, pn=ih.dataset.prov;
+    const st=p1InnerSort[pn];
+    if(st.col===col) st.dir*=-1; else{st.col=col;st.dir=-1;}
+    const body=document.getElementById('p1body-'+pn.replace(/[^a-z0-9]/gi,'_'));
+    if(body){
+      const inner=body.querySelector('.acc-inner');
+      const activeCapId = body.querySelector('.cap-tab.active')?.dataset.capTab || activeCapability;
+      let panel = inner.querySelector('.cap-panel');
+      if (!panel.innerHTML.trim()) panel.innerHTML = renderP1InnerMods(PROVIDERS.find(x=>x.name===pn), st, activeCapId);
+      else panel.innerHTML = renderP1InnerMods(PROVIDERS.find(x=>x.name===pn), st, activeCapId);
+    }
+    return;
+  }
+  const hdr=e.target.closest('.acc-hdr[data-acc]');
+  if(!hdr) return;
+  if(e.target.tagName==='A') return;
+  const pn=hdr.dataset.acc;
+  if(p1Expanded.has(pn)) p1Expanded.delete(pn); else p1Expanded.add(pn);
+  renderP1();
+});
 
 /* ═══════════════ TAB 2: MODEL RANKINGS ═══════════════ */
 const PAGE2=30;
@@ -2340,11 +2353,8 @@ allCreators.forEach(c=>{
 });
 
 function getM2Score(m) {
-  const obj = window.__MODELS_OBJ;
-  if (!obj) return m[3];
-  const mo = obj.find(o => o.name === m[0] && o.creator === m[1]);
-  if (!mo) return m[3];
-  return getCapBenchmark(mo, activeCapability, activeBenchmark);
+  const mo = modelByName(m[0]);
+  return mo ? (getCapBenchmark(mo, activeCapability, activeBenchmark) ?? m[3]) : m[3];
 }
 
 function getM2(){
@@ -2456,8 +2466,13 @@ document.getElementById('m2-table').addEventListener('click',e=>{
   m2Page=0;renderM2();
 });
 ['m2-search','m2-creator','m2-free','m2-intel'].forEach(id=>{
-  document.getElementById(id).addEventListener('input',()=>{m2Page=0;renderM2();});
-  document.getElementById(id).addEventListener('change',()=>{m2Page=0;renderM2();});
+  const el=document.getElementById(id);
+  if (id==='m2-search') {
+    el.addEventListener('input',debounce(()=>{m2Page=0;renderM2();},150));
+  } else {
+    el.addEventListener('input',()=>{m2Page=0;renderM2();});
+  }
+  el.addEventListener('change',()=>{m2Page=0;renderM2();});
 });
 renderM2();
 
@@ -3189,10 +3204,15 @@ document.getElementById('xref-modes').addEventListener('click',e=>{
 
 // XREF filters/search
 ['xm-search','xm-creator','xm-free','xm-intel'].forEach(id=>{
-  document.getElementById(id).addEventListener('input',()=>{xmPage=0;xmExp=null;if(xrefInited&&xrefMode==='bm')renderXM();});
-  document.getElementById(id).addEventListener('change',()=>{xmPage=0;xmExp=null;if(xrefInited&&xrefMode==='bm')renderXM();});
+  const el=document.getElementById(id);
+  if (id==='xm-search') {
+    el.addEventListener('input',debounce(()=>{xmPage=0;xmExp=null;if(xrefInited&&xrefMode==='bm')renderXM();},150));
+  } else {
+    el.addEventListener('input',()=>{xmPage=0;xmExp=null;if(xrefInited&&xrefMode==='bm')renderXM();});
+  }
+  el.addEventListener('change',()=>{xmPage=0;xmExp=null;if(xrefInited&&xrefMode==='bm')renderXM();});
 });
-document.getElementById('xp-search').addEventListener('input',()=>{xpPage=0;xpExp=null;if(xrefInited&&xrefMode==='bp')renderXP();});
+document.getElementById('xp-search').addEventListener('input',debounce(()=>{xpPage=0;xpExp=null;if(xrefInited&&xrefMode==='bp')renderXP();},150));
 ['xp-domain','xp-primary'].forEach(id=>{
   const el=document.getElementById(id);
   el.addEventListener('input',()=>{xpPage=0;xpExp=null;if(xrefInited&&xrefMode==='bp')renderXP();});
