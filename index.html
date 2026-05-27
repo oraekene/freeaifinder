@@ -992,6 +992,7 @@ input::placeholder, .adv-input::placeholder{color:#7f8ea3 !important}
 canvas{background:transparent !important}
 .faq-frame{background:#0f1520 !important}
 .cap-tabs{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
+.cap-global-bar{position:sticky;top:0;z-index:100;transition:box-shadow .2s}
 .cap-tab{padding:6px 12px;border-radius:999px;border:1px solid var(--bdr2);background:transparent;color:var(--muted);font-size:.75rem;cursor:pointer;letter-spacing:.06em;text-transform:uppercase}
 .cap-tab:hover{border-color:var(--accent);color:var(--ink)}
 .cap-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -1024,6 +1025,8 @@ canvas{background:transparent !important}
       <button type="button" class="top-cta" data-jump="faq">Enterprise access</button>
     </div>
   </header>
+
+  <div class="cap-global-bar" id="cap-global-bar" style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center;padding:12px 16px;background:var(--bg2);border-bottom:1px solid var(--bdr2)"></div>
 
   <main class="content">
     <section class="hero reveal">
@@ -2017,14 +2020,33 @@ document.querySelectorAll('[data-jump]').forEach(btn=>{
   });
 });
 transformAllData();
+buildGlobalCapBar();
 setTimeout(()=>setActiveTab(activeTab),0);
+
+function updateBwecsLabels() {
+  const isDefault = activeCapability === 'text' && activeBenchmark === 'artificial-analysis';
+  const el1 = document.getElementById('xp-bwecs-label');
+  const el2 = document.getElementById('xp-xbwecs-label');
+  if (el1) el1.textContent = isDefault ? 'BWECS' : `BCWES (${CAPABILITIES[activeCapability]?.label || '?'})`;
+  if (el2) el2.textContent = isDefault ? 'Marginal BWECS' : `MCWES (${CAPABILITIES[activeCapability]?.label || '?'})`;
+}
 
 function rerenderAll(){
   transformAllData();
+  updateBwecsLabels();
   renderP1();
   renderM2();
   if(xrefInited){xrefMode==='bm'?renderXM():renderXP();}
   updateAdvResultsBar();
+}
+
+function switchCapability(capId) {
+  const cap = CAPABILITIES[capId];
+  if (!cap) return;
+  activeCapability = capId;
+  activeBenchmark = cap.defaultBenchmark || 'artificial-analysis';
+  syncAllCapSelectors();
+  rerenderAll();
 }
 function updateAdvResultsBar(){
   const bar=document.getElementById('adv-results');
@@ -2049,6 +2071,7 @@ function syncAllCapSelectors() {
     if (el && el.value !== activeCapability) el.value = activeCapability;
   });
   syncBenchmarkOptions('m2-benchmark', activeCapability);
+  syncGlobalCapBar();
 }
 ['p1-capability','m2-capability','xm-capability','xp-capability'].forEach(id => {
   const el = document.getElementById(id);
@@ -2068,6 +2091,25 @@ document.addEventListener('change', e => {
     freeOnlyCapability = e.target.checked;
     renderP1();
   }
+});
+function buildGlobalCapBar() {
+  const bar = document.getElementById('cap-global-bar');
+  if (!bar) return;
+  bar.innerHTML = Object.entries(CAPABILITIES)
+    .filter(([,v])=>v.benchmarks.length||v.defaultBenchmark)
+    .map(([k,v])=>`<button class="cap-tab" data-cap-global="${k}" style="font-size:.7rem;padding:5px 10px;border-radius:999px;border:1px solid var(--bdr2);background:transparent;color:var(--muted);cursor:pointer;text-transform:uppercase;letter-spacing:.06em">${v.label}</button>`).join('');
+  syncGlobalCapBar();
+}
+function syncGlobalCapBar() {
+  document.querySelectorAll('.cap-global-bar .cap-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.capGlobal === activeCapability);
+    t.style.background = t.dataset.capGlobal === activeCapability ? 'var(--accent)' : 'transparent';
+    t.style.color = t.dataset.capGlobal === activeCapability ? '#fff' : 'var(--muted)';
+  });
+}
+document.querySelector('.cap-global-bar')?.addEventListener('click', e => {
+  const tab = e.target.closest('[data-cap-global]');
+  if (tab) switchCapability(tab.dataset.capGlobal);
 });
 // sync capability selectors after DOM is ready
 if (document.readyState === 'loading') {
@@ -2974,8 +3016,6 @@ function renderXP(){
   const domainLabel = getDomainLabel(domainKey);
   const rankingLabel = getPrimaryModeLabel(rankingMode);
   const isDefaultCap = activeCapability === 'text' && activeBenchmark === 'artificial-analysis';
-  document.getElementById('xp-bwecs-label').textContent = isDefaultCap ? 'BWECS' : `BCWES (${CAPABILITIES[activeCapability]?.label || '?'})`;
-  document.getElementById('xp-xbwecs-label').textContent = isDefaultCap ? 'Marginal BWECS' : `MCWES (${CAPABILITIES[activeCapability]?.label || '?'})`;
   const rankingModeDesc =
     rankingMode === 'latency'
       ? 'The selected primary signal is TTFT, so lower first-token delay drives the bands first; the other signal only breaks ties and fills gaps.'
